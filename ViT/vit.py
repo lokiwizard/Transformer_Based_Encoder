@@ -99,8 +99,29 @@ class MLP(nn.Module):
         return x
 
 
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample for ResNets, ViT, etc."""
+
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        if self.drop_prob is None or self.drop_prob == 0.:
+            return x
+
+        # Create a random tensor with the same shape as the input's first dimension
+        keep_prob = 1 - self.drop_prob
+        shape = (x.shape[0], 1, 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        binary_tensor = torch.floor(random_tensor)
+
+        output = x / keep_prob * binary_tensor
+        return output
+
+
 class TransformerBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, mlp_ratio=4., dropout=0.1, attn_dropout=0.1):
+    def __init__(self, embed_dim, num_heads, mlp_ratio=4., dropout=0.1, attn_dropout=0.1, drop_path_prob=0.):
         super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
         self.attn = MultiHeadAttention(embed_dim, num_heads, attn_dropout)
@@ -111,12 +132,13 @@ class TransformerBlock(nn.Module):
             out_features=embed_dim,
             dropout=dropout
         )
+        self.drop_path = DropPath(drop_path_prob)
 
     def forward(self, x):
-        # Multi-head attention with residual connection
-        x = x + self.attn(self.norm1(x))
-        # MLP with residual connection
-        x = x + self.mlp(self.norm2(x))
+        # Multi-head attention with residual connection and drop path
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        # MLP with residual connection and drop path
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
 
@@ -133,6 +155,7 @@ class VisionTransformer(nn.Module):
             mlp_ratio=4.,
             dropout=0.1,
             attn_dropout=0.1,
+            drop_path_rate=0.,
             embed_layer=PatchEmbedding,
     ):
         super().__init__()
@@ -145,6 +168,9 @@ class VisionTransformer(nn.Module):
             embed_dim=embed_dim
         )
 
+        # Linear drop path rate for transformer blocks
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+
         # Transformer Encoder
         self.transformer = nn.Sequential(
             *[TransformerBlock(
@@ -152,8 +178,9 @@ class VisionTransformer(nn.Module):
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
                 dropout=dropout,
-                attn_dropout=attn_dropout
-            ) for _ in range(depth)]
+                attn_dropout=attn_dropout,
+                drop_path_prob=dpr[i]
+            ) for i in range(depth)]
         )
 
         # Classification head
@@ -187,7 +214,7 @@ class VisionTransformer(nn.Module):
         return x
 
 
-def create_vit(model_size='base', image_size=224, num_classes=1000):
+def create_vit(model_size='base', image_size=224, num_classes=1000, drop_path_rate=0.1):
     """
     Create a Vision Transformer model based on specified size.
     Available sizes: 'tiny', 'small', 'base', 'large'
@@ -226,5 +253,6 @@ def create_vit(model_size='base', image_size=224, num_classes=1000):
     return VisionTransformer(
         image_size=image_size,
         num_classes=num_classes,
+        drop_path_rate=drop_path_rate,
         **config
     )
