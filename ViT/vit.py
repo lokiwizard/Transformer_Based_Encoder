@@ -70,7 +70,7 @@ class MultiHeadAttention(nn.Module):
         scale = self.head_dim ** -0.5
         attn = torch.matmul(q, k.transpose(-2, -1)) * scale
         attn = F.softmax(attn, dim=-1)
-        attn = self.attn_dropout(attn)
+        attn = self.attn_dropout(attn)  # [batch_size, num_heads, num_tokens, num_tokens]
 
         # Combine heads
         x = torch.matmul(attn, v)
@@ -78,7 +78,7 @@ class MultiHeadAttention(nn.Module):
         x = self.proj(x)
         x = self.proj_dropout(x)
 
-        return x
+        return x, attn
 
 
 class MLP(nn.Module):
@@ -136,10 +136,12 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         # Multi-head attention with residual connection and drop path
-        x = x + self.drop_path(self.attn(self.norm1(x)))
+        identity = x
+        x, attn = self.attn(self.norm1(x))
+        x = self.drop_path(x) + identity
         # MLP with residual connection and drop path
         x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
+        return x, attn
 
 
 class VisionTransformer(nn.Module):
@@ -157,6 +159,7 @@ class VisionTransformer(nn.Module):
             attn_dropout=0.1,
             drop_path_rate=0.,
             embed_layer=PatchEmbedding,
+            return_attn=False
     ):
         super().__init__()
 
@@ -190,6 +193,10 @@ class VisionTransformer(nn.Module):
         # Initialize weights
         self.apply(self._init_weights)
 
+        # Return attention maps for visualization
+        self.return_attn = return_attn
+        self.attn_dict = {}  # 保存注意力矩阵
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.xavier_uniform_(m.weight)
@@ -204,17 +211,24 @@ class VisionTransformer(nn.Module):
         x = self.patch_embed(x)
 
         # Transformer encoder
-        x = self.transformer(x)
+        #x = self.transformer(x)
+
+        for idx, blk in enumerate(self.transformer):
+            x, attn = blk(x)
+            self.attn_dict[f'blk{idx}'] = attn
 
         # Classification head
         x = self.norm(x)
         x = x[:, 0]  # Use [CLS] token only
         x = self.head(x)
 
-        return x
+        if self.return_attn:
+            return x, self.attn_dict
+        else:
+            return x
 
 
-def create_vit(model_size='base', image_size=224, num_classes=1000, drop_path_rate=0.1):
+def create_vit(model_size='base', image_size=224, num_classes=1000, drop_path_rate=0.1, return_attn=False):
     """
     Create a Vision Transformer model based on specified size.
     Available sizes: 'tiny', 'small', 'base', 'large'
@@ -225,24 +239,28 @@ def create_vit(model_size='base', image_size=224, num_classes=1000, drop_path_ra
             embed_dim=192,
             depth=12,
             num_heads=3,
+            return_attn=return_attn
         ),
         'small': dict(
             patch_size=16,
             embed_dim=384,
             depth=12,
             num_heads=6,
+            return_attn=return_attn
         ),
         'base': dict(
             patch_size=16,
             embed_dim=768,
             depth=12,
             num_heads=12,
+            return_attn=return_attn
         ),
         'large': dict(
             patch_size=16,
             embed_dim=1024,
             depth=24,
             num_heads=16,
+            return_attn=return_attn
         ),
     }
 
@@ -256,3 +274,15 @@ def create_vit(model_size='base', image_size=224, num_classes=1000, drop_path_ra
         drop_path_rate=drop_path_rate,
         **config
     )
+
+"""
+if __name__ == '__main__':
+    # 只返回分类结果
+    model = create_vit('base', image_size=224, num_classes=10, drop_path_rate=0.1, return_attn=False)
+    
+    # 如果需要返回注意力矩阵，将return_attn设置为True
+    model = create_vit('base', image_size=224, num_classes=10, drop_path_rate=0.1, return_attn=True)
+"""
+
+
+
